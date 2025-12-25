@@ -1,180 +1,265 @@
 #include <errno.h>
-#include <unistd.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <stddef.h>
 #include <string.h>
-#include <stdio.h>
-#include <stdint.h>
-#include <fcntl.h>
 #include <sys/types.h>
+#include <fcntl.h>
+#include <unistd.h>
 
-#define RIO_BUFSIZE 0x1000
+#define BUFFER_SIZE 0x1000 // 4096 bytes
+typedef struct fdata *rio_t; // Opaque type
 
-#define RIO_SEEK_SET 0
-#define RIO_SEEK_CUR 1
-#define RIO_SEEK_END 2
-
-typedef struct rio {
-        int     fd;
-        size_t  cursor_pos;
-        size_t  unread;
-        char    rbuf[RIO_BUFSIZE];
-} rio_t;
-
-static rio_t fdata = { .fd = -1 };
-
-int rio_openf(const char *file_name, int flags, mode_t mode)
+// File metadata + for internal buffer
+struct fdata
 {
-        memset(&fdata, 0, sizeof(fdata));
-        fdata.fd = -1;
+    int fd;
+    char rbuf[BUFFER_SIZE];
+    size_t cursor_pos;
+    size_t unread_bytes;
+};
 
-        int fd;
-        if (flags & O_CREAT)
-                fd = open(file_name, flags, mode);
-        else
-                fd = open(file_name, flags);
-
-        if (fd < 0)
-                return -1;
-
-        fdata.fd = fd;
-        return 0;
+/**
+ * Open requested file using system open call 
+ * To open process std file streams use:
+ * "/dev/stdin" -> standard input
+ * "/dev/stdout" -> standard output
+ * "/dev/stderr" -> standard error
+ * Returns rio_t struct which has file data information
+ */
+rio_t rio_open(const char *pathname, int flags, mode_t mode)
+{
+    rio_t finfo = malloc(sizeof(struct fdata));
+    int df;
+    if (!finfo)
+    {
+        perror("malloc");
+        return NULL;
+    }
+    memset(finfo,0,sizeof(struct fdata)); // zero out for safety
+    if (flags & O_CREAT)
+    {
+        df = open(pathname,flags,mode);
+        if (df < 0)
+        {
+            perror("open");
+            free(finfo);
+            return NULL;
+        }
+        finfo->fd = df;
+    } else
+    {
+        df = open(pathname,flags,0);
+        if (df < 0)
+        {
+            perror("open");
+            return NULL;
+        }
+        finfo->fd = df;
+    }
+    return finfo;
 }
 
-ssize_t rio_read(void *buf, size_t n)
+/**
+ * Close file by passing rio_t struct that has file metadata
+ * If file is not closed, struct is intact and can be used to retry operation
+ */
+void rio_close(rio_t finfo)
 {
-        if (fdata.fd < 0)
-        {
-                errno = EBADF;
-                return -1;
-        }
+    if (!finfo)
+    {
+        return;
 
-        if (n >= RIO_BUFSIZE)
-                return rio_readn(buf, n);
+    }
+    int df = finfo->fd;
+    int c = close(df);
+    if (c < 0)
+    {
+        perror("close");
+        return;
+    }
 
-        if (fdata.unread == 0)
-        {
-                ssize_t res;
-                do {
-                        res = read(fdata.fd, fdata.rbuf, RIO_BUFSIZE);
-                } while (res < 0 && errno == EINTR);
+    free(finfo);
 
-                if (res <= 0)
-                        return res;
-
-                fdata.unread = res;
-                fdata.cursor_pos = 0;
-        }
-
-        size_t cnt = n < fdata.unread ? n : fdata.unread;
-        memcpy(buf, fdata.rbuf + fdata.cursor_pos, cnt);
-
-        fdata.cursor_pos += cnt;
-        fdata.unread     -= cnt;
-
-        return cnt;
 }
 
-ssize_t rio_readn(void *buf, size_t n)
+/**
+ * Move read/write file pointer by specfic offset by using relative postion using lseek
+ * Returns offset from start.
+ */
+off_t rio_seek(rio_t finfo, off_t offset, int whence)
 {
-        if (fdata.fd < 0)
-        {
-                errno = EBADF;
-                return -1;
-        }
+    if (!finfo)
+    {
+        return (off_t)-1;
+    }
+    off_t res = lseek(finfo->fd,offset,whence);
+    if (res < 0)
+    {
+        perror("seek");
+        return (off_t)-1;
+    }
 
-        size_t total = 0;
-        char *p = buf;
+    finfo->cursor_pos = 0;
+    finfo->unread_bytes = 0;
+    return res;
 
-        while (total < n)
-        {
-                ssize_t res = read(fdata.fd, p + total, n - total);
-
-                if (res < 0)
-                {
-                        if (errno == EINTR)
-                                continue;
-                        return -1;
-                }
-
-                if (res == 0)
-                        break;
-
-                total += res;
-        }
-
-        return total;
 }
 
-ssize_t rio_write(const void *buf, size_t n)
+/**
+ * Print state of buffer for debugging
+ */
+void rio_dump_state(rio_t finfo)
 {
-        if (fdata.fd < 0)
-        {
-                errno = EBADF;
-                return -1;
-        }
+    if (!finfo)
+    {
+        puts("No file metadata found.");
+        return;
+    }
 
-        size_t total = 0;
-        const char *p = buf;
+    puts("--- File Information ---");
+    printf("File descriptor: %d\n", finfo->fd);
+    printf("Current buffer position: %zu\n", finfo->cursor_pos);
+    printf("Unread bytes left in buffer: %zu\n", finfo->unread_bytes);
 
-        while (total < n)
-        {
-                ssize_t res = write(fdata.fd, p + total, n - total);
-
-                if (res < 0)
-                {
-                        if (errno == EINTR)
-                                continue;
-                        return -1;
-                }
-
-                if (res == 0)
-                        return -1;
-
-                total += res;
-        }
-
-        return total;
 }
 
-off_t rio_fseek(uint8_t flag, off_t offset)
+/**
+ * Read bytes requested into user buffer (user must make sure buffer is big enough to handle request)
+ * This function guarantees all of bytes requested will be read unless an devastating error occurs, fewer on (EOF)
+ */
+ssize_t rio_readn(rio_t finfo, void *usr_buf, size_t bytes_to_read)
 {
-        if (fdata.fd < 0)
+    if (!finfo || !usr_buf)
+    {
+        return -1;
+    }
+
+    char *ub = (char *)(usr_buf);
+    size_t total_read = 0;
+    while(total_read < bytes_to_read)
+    {
+        ssize_t itr_read = read(finfo->fd, ub + total_read, bytes_to_read - total_read);
+        if (itr_read < 0)
         {
-                errno = EBADF;
-                return -1;
+            if (errno == EINTR)
+            {
+                continue;
+            }
+            perror("read");
+            return -1;
         }
 
-        int whence;
-        switch (flag)
+        if (itr_read == 0) // EOF
         {
-                case RIO_SEEK_SET: whence = SEEK_SET; break;
-                case RIO_SEEK_CUR: whence = SEEK_CUR; break;
-                case RIO_SEEK_END: whence = SEEK_END; break;
-                default:
-                        errno = EINVAL;
-                        return -1;
-        }
+            break;
+        } 
 
-        off_t res = lseek(fdata.fd, offset, whence);
-        if (res == -1)
-                return -1;
+        total_read += itr_read;
+    }
 
-        fdata.cursor_pos = 0;
-        fdata.unread = 0;
-
-        return res;
+    return total_read;
 }
 
-void fdata_dump()
+/**
+ * Write bytes from user buffer (user must make sure buffer is big enough to handle request)
+ * This function guarantees all of bytes requested will be wrote unless an devasting error occurs
+ */
+ssize_t rio_writen(rio_t finfo, const void *usr_buf, size_t bytes_to_write)
 {
-        if (fdata.fd < 0)
+    if (!finfo || !usr_buf)
+    {
+        return -1;
+    }
+
+    const char *ub = (char *)(usr_buf);
+    size_t total_wrote = 0;
+    while(total_wrote < bytes_to_write)
+    {
+        ssize_t itr_wrote = write(finfo->fd, ub + total_wrote, bytes_to_write - total_wrote);
+        if (itr_wrote < 0)
         {
-                fprintf(stderr, "No file opened!");
-                return;
+            if (errno == EINTR)
+            {
+                continue;
+            }
+            perror("write");
+            return -1;
         }
 
-        puts("--- File Information ---");
-        printf("FD #: %d\n", fdata.fd);
-        printf("Position of cursor in buffer: %zu\n", fdata.cursor_pos);
-        printf("Unread bytes left in buffer: %zu\n", fdata.unread);
+        if (itr_wrote == 0) // Abnormal behaviour, exit with error
+        {
+            return -1;
+        }
+        total_wrote += itr_wrote;
+    }
+
+    return total_wrote;
+
+}
+
+/**
+ * Attempt to read bytes from file and put fill user buffer (use internal buffer when buffer size is respectable w.r.t to constraint)
+ * If request is to big, handle it with readn()
+ *  Return up to N bytes with minimal syscalls, handling partial reads correctly
+ */
+ssize_t rio_read(rio_t finfo, void *usr_buf, size_t bytes_to_read)
+{
+    if (!finfo || !usr_buf)
+    {
+        return -1;
+    }
+
+    char *ub = (char *)(usr_buf);
+    ssize_t res;
+    if (bytes_to_read > BUFFER_SIZE)
+    {
+        size_t buffered_bytes = (finfo->unread_bytes > bytes_to_read) ? bytes_to_read : finfo->unread_bytes;
+        if (buffered_bytes)
+        {
+            memcpy(ub,finfo->rbuf + finfo->cursor_pos,buffered_bytes);
+            ub += buffered_bytes;
+            bytes_to_read -= buffered_bytes;
+            finfo->unread_bytes = 0;
+            finfo->cursor_pos = 0;
+        }
+
+        res = rio_readn(finfo,ub,bytes_to_read);
+        if (res < 0)
+        {
+            return -1;
+        }
+        return (res + buffered_bytes);
+    }
+
+    // Read into internal buffer
+    if (finfo->unread_bytes == 0)
+    {
+    read:
+        res = read(finfo->fd, finfo->rbuf, BUFFER_SIZE);
+        if (res < 0)
+        {
+            if (errno == EINTR)
+            {
+                goto read;
+            }
+            perror("read");
+            return -1;
+        }
+
+        if (res == 0)
+        {
+            return 0;
+        }
+
+        finfo->unread_bytes = res;
+        finfo->cursor_pos = 0;
+    }
+
+    ssize_t bytes_read = (finfo->unread_bytes > bytes_to_read) ? bytes_to_read : finfo->unread_bytes;
+    memcpy(usr_buf,finfo->rbuf + finfo->cursor_pos,bytes_read);
+    finfo->cursor_pos += bytes_read;
+    finfo->unread_bytes -= bytes_read;
+
+    return bytes_read;
 }
