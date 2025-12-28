@@ -1,4 +1,4 @@
-Using a virtual RAM DISK we mimic how a single file is stored and retrieved. The memdrv is not implemented, but as the paramters as follows:
+Using a virtual RAM DISK we mimic how a single file is stored and retrieved. The memdrv is not implemented, but the paramters are as follows:
 /* memdrv.h - defines parameters of the memdrv device */  
 #pragma once  
 #define MEMDRV_BLOCK_SIZE 64  
