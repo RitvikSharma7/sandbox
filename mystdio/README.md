@@ -11,7 +11,7 @@
 ## Design Decisions
 * Unbuffered streams prioritize correctness over syscall minimization
 * Buffer flush semantics modeled after POSIX stdio
-* Layered architecture (printf → puts → putc → write)
+* Layered architecture (printf -> puts -> putc -> write)
 
 ## Limitations
 * No read support just yet for time sake
