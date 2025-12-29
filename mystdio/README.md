@@ -4,7 +4,7 @@
 
 ## Features
 * Fully buffered, line buffered, unbuffered modes
-* Custom putc, puts, printf
+* Custom putc, puts, printf (minimal version of printf - supports %c, %d, %%, %s)
 * Signal-safe flushing behavior
 * EINTR-safe writes
 
